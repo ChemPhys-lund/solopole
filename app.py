@@ -14,9 +14,9 @@ st.title("🌞 Vertical Solar Tower Energy Simulator")
 st.sidebar.header("Simulation Parameters")
 latitude = st.sidebar.number_input("Latitude", value=40.0, format="%f")
 longitude = st.sidebar.number_input("Longitude", value=-80.0, format="%f")
-battery_enabled = st.sidebar.checkbox("Simulate Battery", value=True)
+battery_enabled = st.sidebar.checkbox("Simulate Battery", value=False)
 battery_capacity_kwh = st.sidebar.slider("Battery Capacity (kWh)", 0.0, 50.0, 10.0)
-grid_enabled = st.sidebar.checkbox("Simulate Smart Grid", value=True)
+grid_enabled = st.sidebar.checkbox("Simulate Smart Grid", value=False)
 grid_limit_kw = st.sidebar.slider("Grid Support Limit (kW)", 0.0, 5.0, 2.0)
 
 # ------------------------------
@@ -59,7 +59,7 @@ reference_date = '2019-01-01'
 time_range = pd.date_range(f'{reference_date} 05:00', f'{reference_date} 20:00', freq='0.5h', tz='Etc/GMT+5')
 times_local = time_range.tz_convert(loc.tz)
 time_of_day = times_local.strftime('%H:%M')
-time_of_day_shifted = (times_local + pd.Timedelta(hours=-5)).strftime('%H:%M')
+time_of_day_shifted = (times_local + pd.Timedelta(hours=0)).strftime('%H:%M')
 
 # ------------------------------
 # 📊 Simulation
