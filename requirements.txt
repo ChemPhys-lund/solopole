@@ -1,5 +1,6 @@
 streamlit
-pvlib
 pandas
 matplotlib
+pvlib
+seaborn
 numpy
