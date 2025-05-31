@@ -78,7 +78,7 @@ def run_raw_simulation(lat, lon):
     mc = modelchain.ModelChain(system, loc, aoi_model='physical', spectral_model='no_loss')
 
     reference_date = '2019-01-01'
-    time_range = pd.date_range(f'{reference_date} 05:00', f'{reference_date} 20:00', freq='0.5h', tz='Etc/GMT+5')
+    time_range = pd.date_range(f'{reference_date} 05:00', f'{reference_date} 20:00', freq='1h', tz='Etc/GMT+5')
     times_local = time_range.tz_convert(loc.tz)
     time_of_day = times_local.strftime('%H:%M')
     time_of_day_shifted = (times_local + pd.Timedelta(hours=-5)).strftime('%H:%M')
@@ -100,7 +100,7 @@ def run_raw_simulation(lat, lon):
 
         month_name = calendar.month_name[month]
         results_raw[month_name] = total_dc_output.values
-        energy_kwh = total_dc_output.sum() * 0.5
+        energy_kwh = total_dc_output.sum() #* 0.5
         monthly_energy_kwh[month_name] = energy_kwh
 
     return results_raw, monthly_energy_kwh, time_of_day_shifted
