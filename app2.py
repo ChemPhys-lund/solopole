@@ -46,7 +46,7 @@ def run_raw_simulation(lat, lon):
     loc = location.Location(latitude=lat, longitude=lon)
     tower_diameter = 0.6
     tower_height = 12
-    panel_width = 0.1
+    panel_width = 0.3
     panel_height = 1.0
     power_density = 175
 
