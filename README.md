@@ -19,17 +19,8 @@ This project is an interactive simulation tool for a **Vertical Solar Tower Syst
 
 ## 💻 Live Demo (Streamlit Hosted)
 
-If deployed on Streamlit Cloud:
+You can deploy it on Streamlit Cloud:
 
-```
-https://YOUR-STREAMLIT-USERNAME.streamlit.app/
-```
-
-Embed in your website using an `<iframe>`:
-
-```html
-<iframe src="https://YOUR-STREAMLIT-USERNAME.streamlit.app/" width="100%" height="900" frameborder="0"></iframe>
-```
 
 ---
 
