@@ -81,7 +81,7 @@ def run_raw_simulation(lat, lon):
     time_range = pd.date_range(f'{reference_date} 05:00', f'{reference_date} 20:00', freq='1h', tz='Etc/GMT+5')
     times_local = time_range.tz_convert(loc.tz)
     time_of_day = times_local.strftime('%H:%M')
-    time_of_day_shifted = (times_local + pd.Timedelta(hours=-5)).strftime('%H:%M')
+    time_of_day_shifted = (times_local + pd.Timedelta(hours=0)).strftime('%H:%M')
 
     results_raw = pd.DataFrame(index=time_of_day)
     monthly_energy_kwh = {}
