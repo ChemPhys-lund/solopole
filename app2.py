@@ -1,116 +1,125 @@
+import streamlit as st
 import numpy as np
-import matplotlib.pyplot as plt
-from pvlib import pvsystem, modelchain, location, iotools
 import pandas as pd
+import matplotlib.pyplot as plt
 import calendar
+from pvlib import pvsystem, modelchain, location, iotools
 
-# ------------------------------
-# 🌍 Global Parameters
-# ------------------------------
-FREQ = '1h'  # Time step frequency ('0.5h' or '1h')
-TIME_SHIFT = 0  # Time shift in hours (set to 0 to avoid plotting issues)
-LATITUDE = 40
-LONGITUDE = -80
+# ===============================
+# Global parameters (easy to edit)
+# ===============================
 
-USE_CUSTOM_LOCATION = True
-USE_REAL_WEATHER = True
-PLOT_ENERGY_REPORTS = True
-SIMULATE_BATTERY = True
-SIMULATE_SMART_GRID = True
+# Location defaults
+DEFAULT_LATITUDE = 40.0
+DEFAULT_LONGITUDE = -80.0
 
+# Tower specs
+TOWER_DIAMETER = 0.6  # meters
+TOWER_HEIGHT = 12.0  # meters
+
+# Panel specs
+PANEL_WIDTH = 0.1  # meters
+PANEL_HEIGHT = 1.0  # meters
+POWER_DENSITY = 175  # W/m²
+
+# Battery
 BATTERY_CAPACITY_KWH = 10.0
-BATTERY_CHARGE_EFF = 0.95
-BATTERY_DISCHARGE_EFF = 0.95
+BATTERY_CHARGE_EFFICIENCY = 0.95
+BATTERY_DISCHARGE_EFFICIENCY = 0.95
 
+# Grid
 GRID_SUPPORT_LIMIT_KW = 2.0
 
-# ------------------------
-# 🔧 Tower and Panel Specs
-# ------------------------
-tower_diameter = 0.6
-tower_height = 12
+# Simulation time settings
+TIMEZONE = 'Etc/GMT+5'
+FREQ = '30min'  # 30 minute frequency for simulation steps
 
-panel_width = 0.1
-panel_height = 1.0
-power_density = 175
+# ======================================
+# Helper functions for simulation + plots
+# ======================================
 
-num_panels_circumference = int(np.ceil((np.pi * tower_diameter) / panel_width))
-num_panels_height = int(tower_height / panel_height)
+def create_location(lat, lon):
+    return location.Location(latitude=lat, longitude=lon, tz=TIMEZONE)
 
-panel_area_total = num_panels_circumference * num_panels_height * panel_width * panel_height
-total_dc_power_kw = (panel_area_total * power_density) / 1000
+def create_arrays(tower_diameter, tower_height, panel_width, panel_height, power_density):
+    num_panels_circ = int(np.ceil(np.pi * tower_diameter / panel_width))
+    num_panels_height = int(tower_height / panel_height)
+    panel_area_total = num_panels_circ * num_panels_height * panel_width * panel_height  # m²
+    total_dc_power_kw = (panel_area_total * power_density) / 1000  # kW
 
-panel_orientations = np.linspace(0, 360, num_panels_circumference, endpoint=False)
+    panel_orientations = np.linspace(0, 360, num_panels_circ, endpoint=False)
 
-# ------------------------
-# ☀️ Location and Simulation
-# ------------------------
-loc = location.Location(latitude=LATITUDE, longitude=LONGITUDE) if USE_CUSTOM_LOCATION else location.Location(latitude=40, longitude=-80)
+    array_kwargs = dict(
+        module_parameters=dict(pdc0=1, gamma_pdc=-0.004),
+        temperature_model_parameters=dict(a=-3.56, b=-0.075, deltaT=3)
+    )
 
-array_kwargs = dict(
-    module_parameters=dict(pdc0=1, gamma_pdc=-0.004),
-    temperature_model_parameters=dict(a=-3.56, b=-0.075, deltaT=3)
-)
+    arrays = [
+        pvsystem.Array(
+            mount=pvsystem.FixedMount(90, az),
+            name=f'Array {az:.1f}°',
+            **array_kwargs
+        )
+        for az in panel_orientations
+    ]
 
-arrays = [
-    pvsystem.Array(
-        mount=pvsystem.FixedMount(90, az),
-        name=f'Array {az:.1f}°',
-        **array_kwargs
-    ) for az in panel_orientations
-]
+    system = pvsystem.PVSystem(
+        arrays=arrays,
+        inverter_parameters=dict(pdc0=total_dc_power_kw)
+    )
 
-system = pvsystem.PVSystem(
-    arrays=arrays,
-    inverter_parameters=dict(pdc0=total_dc_power_kw)
-)
+    return system, total_dc_power_kw
 
-mc = modelchain.ModelChain(system, loc, aoi_model='physical', spectral_model='no_loss')
+def generate_time_range(reference_date, freq, tz):
+    # Full day from 00:00 to 23:30 local time
+    time_range_local = pd.date_range(f'{reference_date} 00:00', f'{reference_date} 23:30', freq=freq, tz=tz)
+    return time_range_local
 
-reference_date = '2019-01-01'
-time_range = pd.date_range(f'{reference_date} 00:00', f'{reference_date} 23:00', freq=FREQ, tz='Etc/GMT+0')
-times_local = time_range.tz_convert(loc.tz)
-time_of_day = times_local.strftime('%H:%M')
-time_of_day_shifted = (times_local + pd.Timedelta(hours=TIME_SHIFT)).strftime('%H:%M')
-
-results_raw = pd.DataFrame(index=time_of_day)
-monthly_energy_kwh = {}
-
-for month in range(1, 13):
-    times = time_range.map(lambda t: t.replace(month=month))
-
-    if USE_REAL_WEATHER:
+def get_weather_data(loc, times, use_real_weather=True):
+    if use_real_weather:
         try:
             weather, metadata_list, metadata_dict, _ = iotools.get_pvgis_tmy(loc.latitude, loc.longitude, map_variables=True)
             weather = weather.loc[times]
-        except:
-            weather = loc.get_clearsky(times)
+            return weather
+        except Exception as e:
+            st.warning(f"Real weather data fetch failed, using clearsky: {e}")
+            return loc.get_clearsky(times)
     else:
-        weather = loc.get_clearsky(times)
+        return loc.get_clearsky(times)
 
-    mc.run_model(weather)
-    total_dc_output = sum(mc.results.dc)
+def run_pv_simulation(system, mc, loc, time_range, use_real_weather):
+    results = pd.DataFrame()
+    monthly_energy_kwh = {}
 
-    month_name = calendar.month_name[month]
-    results_raw[month_name] = total_dc_output.values
+    for month in range(1, 13):
+        # Replace month in time_range
+        times = time_range.map(lambda t: t.replace(month=month))
 
-    timestep_hours = pd.Timedelta(FREQ).total_seconds() / 3600
-    energy_kwh = total_dc_output.sum() * timestep_hours
-    monthly_energy_kwh[month_name] = energy_kwh
+        weather = get_weather_data(loc, times, use_real_weather)
+        mc.run_model(weather)
+        total_dc_output = sum(mc.results.dc)
 
-# -----------------------------------
-# Battery Simulation
-# -----------------------------------
-results_battery = results_raw.copy()
-if SIMULATE_BATTERY:
-    for month in results_raw.columns:
+        month_name = calendar.month_name[month]
+        results[month_name] = total_dc_output.values
+
+        # Calculate monthly energy kWh
+        step_hours = pd.Timedelta(mc.results.index.freq).total_seconds() / 3600
+        energy_kwh = total_dc_output.sum() * step_hours
+        monthly_energy_kwh[month_name] = energy_kwh
+
+    results.index = time_range.strftime('%H:%M')
+    return results, monthly_energy_kwh
+
+def simulate_battery(raw_output, capacity_kwh, charge_eff, discharge_eff, step_hours=0.5):
+    results_battery = raw_output.copy()
+    for month in raw_output.columns:
         soc = 0.0
         adjusted_output = []
-        for power in results_raw[month]:
-            energy = power * (pd.Timedelta(FREQ).total_seconds() / 3600)
+        for power in raw_output[month]:
+            energy = power * step_hours
             if energy > 0:
-                excess_energy = max(0, energy - 0.5)
-                charge = min(excess_energy * BATTERY_CHARGE_EFF, BATTERY_CAPACITY_KWH - soc)
+                excess_energy = max(0, energy - 0.5)  # constant load 0.5 kWh assumed
+                charge = min(excess_energy * charge_eff, capacity_kwh - soc)
                 soc += charge
                 net_energy = energy - charge
             else:
@@ -118,95 +127,132 @@ if SIMULATE_BATTERY:
 
             if net_energy < 0.5:
                 needed = 0.5 - net_energy
-                discharge = min(needed / BATTERY_DISCHARGE_EFF, soc)
+                discharge = min(needed / discharge_eff, soc)
                 soc -= discharge
-                net_energy += discharge * BATTERY_DISCHARGE_EFF
+                net_energy += discharge * discharge_eff
 
-            adjusted_output.append(net_energy / (pd.Timedelta(FREQ).total_seconds() / 3600))
+            adjusted_output.append(net_energy / step_hours)
         results_battery[month] = adjusted_output
-else:
-    results_battery = None
+    return results_battery
 
-# -----------------------------------
-# Smart Grid Simulation
-# -----------------------------------
-results_smart_grid = results_battery.copy() if results_battery is not None else results_raw.copy()
-
-if SIMULATE_SMART_GRID:
-    for month in results_smart_grid.columns:
+def simulate_smart_grid(battery_output, grid_limit_kw):
+    results_grid = battery_output.copy()
+    for month in battery_output.columns:
         adjusted_output = []
-        for power_kw in results_smart_grid[month]:
+        for power_kw in battery_output[month]:
             load_kw = 1.0
             if power_kw < load_kw:
-                support = min(GRID_SUPPORT_LIMIT_KW, load_kw - power_kw)
+                support = min(grid_limit_kw, load_kw - power_kw)
                 adjusted_output.append(power_kw + support)
             else:
                 adjusted_output.append(power_kw)
-        results_smart_grid[month] = adjusted_output
-else:
-    results_smart_grid = None
-
-# -----------------------
-# 📊 Plotting section
-# -----------------------
-
-markers = ['o', 's', 'D', '^', 'v', '<', '>', 'p', '*', 'h', 'H', 'X']
-colors = plt.cm.get_cmap('tab10', 12)
+        results_grid[month] = adjusted_output
+    return results_grid
 
 def plot_monthly_profiles(df, title_prefix):
+    markers = ['o', 's', 'D', '^', 'v', '<', '>', 'p', '*', 'h', 'H', 'X']
+    colors = plt.cm.get_cmap('tab10', 12)
+
     fig, ax = plt.subplots(figsize=(12, 8))
-    for month in range(1, 13):
+    for i, month in enumerate(range(1, 13)):
         month_name = calendar.month_name[month]
-        ax.plot(time_of_day, df[month_name],
-                marker=markers[month - 1], color=colors(month - 1), label=month_name, linestyle='-')
+        ax.plot(df.index, df[month_name],
+                marker=markers[i], color=colors(i), label=month_name, linestyle='-')
     ax.set_xlabel('Time of Day')
     ax.set_ylabel('Total System Output (kW)')
-    ax.set_title(f'{title_prefix} - Energy Production for One Day in Each Month')
+    ax.set_title(f'{title_prefix} - Hourly Energy Production for One Day in Each Month')
     ax.legend(title="Month", loc='upper left', bbox_to_anchor=(1, 1))
     plt.xticks(rotation=45)
     plt.grid(True)
     plt.tight_layout()
-    plt.show()
+    st.pyplot(fig)
 
 def plot_normalized_profiles(df, title_prefix):
+    markers = ['o', 's', 'D', '^', 'v', '<', '>', 'p', '*', 'h', 'H', 'X']
+    colors = plt.cm.get_cmap('tab10', 12)
+
     fig, ax = plt.subplots(figsize=(12, 8))
-    for month in range(1, 13):
+    for i, month in enumerate(range(1, 13)):
         month_name = calendar.month_name[month]
-        normalized_output = df[month_name] / df[month_name].max()
-        ax.plot(time_of_day, normalized_output,
-                marker=markers[month - 1], color=colors(month - 1), label=month_name, linestyle='-')
+        normalized = df[month_name] / df[month_name].max()
+        ax.plot(df.index, normalized,
+                marker=markers[i], color=colors(i), label=month_name, linestyle='-')
     ax.set_xlabel('Time of Day')
     ax.set_ylabel('Normalized System Output')
-    ax.set_title(f'{title_prefix} - Normalized Energy Production for One Day in Each Month')
+    ax.set_title(f'{title_prefix} - Normalized Hourly Energy Production for One Day in Each Month')
     ax.legend(title="Month", loc='upper left', bbox_to_anchor=(1, 1))
     plt.xticks(rotation=45)
     plt.grid(True)
     plt.tight_layout()
-    plt.show()
+    st.pyplot(fig)
 
-plot_monthly_profiles(results_raw, "Raw PV System Output")
-plot_normalized_profiles(results_raw, "Raw PV System Output")
+# ======================
+# Streamlit app starts here
+# ======================
 
-if SIMULATE_BATTERY and results_battery is not None:
-    plot_monthly_profiles(results_battery, "With Battery Simulation")
-    plot_normalized_profiles(results_battery, "With Battery Simulation")
+st.title("Solar Tower Energy Simulation")
 
-if SIMULATE_SMART_GRID and results_smart_grid is not None:
-    plot_monthly_profiles(results_smart_grid, "With Battery + Smart Grid Simulation")
-    plot_normalized_profiles(results_smart_grid, "With Battery + Smart Grid Simulation")
+# Sidebar inputs
+st.sidebar.header("Simulation Settings")
+latitude = st.sidebar.number_input("Latitude", value=DEFAULT_LATITUDE, format="%.6f")
+longitude = st.sidebar.number_input("Longitude", value=DEFAULT_LONGITUDE, format="%.6f")
+use_real_weather = st.sidebar.checkbox("Use Real Weather Data (PVGIS TMY)", value=True)
+simulate_battery_flag = st.sidebar.checkbox("Simulate Battery", value=False)
+simulate_grid_flag = st.sidebar.checkbox("Simulate Smart Grid", value=False)
 
-# --------------------------
-# 📊 Additional Energy Plots
-# --------------------------
-if PLOT_ENERGY_REPORTS:
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.bar(monthly_energy_kwh.keys(), monthly_energy_kwh.values(), color='skyblue')
-    ax.set_ylabel("Energy (kWh)")
-    ax.set_title("Monthly Energy Production (Raw PV System Output)")
-    plt.xticks(rotation=45)
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
+# Buttons
+run_raw_sim = st.sidebar.button("Run Raw PV Output Simulation")
+run_battery_sim = st.sidebar.button("Run Battery + Smart Grid Simulation")
 
-    total_annual_energy = sum(monthly_energy_kwh.values())
-    print(f"\n🔋 Total Annual Energy Production (Raw PV System Output): {total_annual_energy:.2f} kWh\n")
+# Create Location and System upfront
+loc = create_location(latitude, longitude)
+system, total_dc_power_kw = create_arrays(TOWER_DIAMETER, TOWER_HEIGHT, PANEL_WIDTH, PANEL_HEIGHT, POWER_DENSITY)
+mc = modelchain.ModelChain(system, loc, aoi_model='physical', spectral_model='no_loss')
+
+reference_date = '2019-01-01'
+time_range = generate_time_range(reference_date, FREQ, loc.tz)
+
+# Store simulation results in session state to avoid recomputation
+if 'results_raw' not in st.session_state:
+    st.session_state['results_raw'], st.session_state['monthly_energy_raw'] = run_pv_simulation(system, mc, loc, time_range, use_real_weather)
+if 'results_battery' not in st.session_state:
+    st.session_state['results_battery'] = None
+if 'results_grid' not in st.session_state:
+    st.session_state['results_grid'] = None
+
+# Run raw simulation if button pressed
+if run_raw_sim:
+    st.session_state['results_raw'], st.session_state['monthly_energy_raw'] = run_pv_simulation(system, mc, loc, time_range, use_real_weather)
+    st.success("Raw PV Output Simulation completed.")
+
+# Display raw simulation results
+st.subheader("Raw PV Output Simulation Results")
+plot_monthly_profiles(st.session_state['results_raw'], "Raw PV Output")
+plot_normalized_profiles(st.session_state['results_raw'], "Raw PV Output")
+
+# Show monthly and annual summaries
+st.markdown("### Monthly Energy Production (kWh)")
+monthly_energy_df = pd.DataFrame.from_dict(st.session_state['monthly_energy_raw'], orient='index', columns=['Energy (kWh)'])
+monthly_energy_df.index.name = "Month"
+st.dataframe(monthly_energy_df)
+annual_energy = monthly_energy_df['Energy (kWh)'].sum()
+st.markdown(f"**Annual Energy Production:** {annual_energy:.2f} kWh")
+
+# Battery + Grid simulation
+if simulate_battery_flag:
+    if run_battery_sim:
+        st.session_state['results_battery'] = simulate_battery(st.session_state['results_raw'], BATTERY_CAPACITY_KWH, BATTERY_CHARGE_EFFICIENCY, BATTERY_DISCHARGE_EFFICIENCY)
+        st.success("Battery Simulation completed.")
+    if st.session_state['results_battery'] is not None:
+        st.subheader("Battery Simulation Results")
+        plot_monthly_profiles(st.session_state['results_battery'], "Battery Output")
+        plot_normalized_profiles(st.session_state['results_battery'], "Battery Output")
+
+if simulate_grid_flag and st.session_state.get('results_battery') is not None:
+    if run_battery_sim:
+        st.session_state['results_grid'] = simulate_smart_grid(st.session_state['results_battery'], GRID_SUPPORT_LIMIT_KW)
+        st.success("Smart Grid Simulation completed.")
+    if st.session_state['results_grid'] is not None:
+        st.subheader("Smart Grid Simulation Results")
+        plot_monthly_profiles(st.session_state['results_grid'], "Smart Grid Output")
+        plot_normalized_profiles(st.session_state['results_grid'], "Smart Grid Output")
